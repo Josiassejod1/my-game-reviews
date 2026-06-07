@@ -5,8 +5,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"golang.org/x/net/html"
 )
 
 // ---- helper tests ----
@@ -44,85 +42,30 @@ func TestTruncate(t *testing.T) {
 	}
 }
 
-// ---- HTML parser tests ----
+// ---- games.json loader ----
 
-const sampleHTML = `<!DOCTYPE html><html><body>
-  <div class="card mx-auto game-cover user-rating" data-rating="9" game_id="1">
-    <a href="/games/elden-ring/" class="cover-link"></a>
-    <img class="card-img height" src="https://images.igdb.com/cover/elden.jpg" alt="Elden Ring">
-    <div class="game-text-centered">Elden Ring</div>
-  </div>
-  <div class="card mx-auto game-cover user-rating" data-rating="10" game_id="2">
-    <a href="/games/hollow-knight/" class="cover-link"></a>
-    <img class="card-img height" src="https://images.igdb.com/cover/hk.jpg" alt="Hollow Knight">
-    <div class="game-text-centered">Hollow Knight</div>
-  </div>
-  <div class="card mx-auto game-cover" game_id="3">
-    <a href="/games/celeste/" class="cover-link"></a>
-    <img class="card-img height" src="https://images.igdb.com/cover/celeste.jpg" alt="Celeste">
-    <div class="game-text-centered">Celeste</div>
-  </div>
-</body></html>`
-
-func TestExtractGames(t *testing.T) {
-	doc, err := html.Parse(strings.NewReader(sampleHTML))
-	if err != nil {
-		t.Fatalf("html.Parse: %v", err)
-	}
-
-	games := extractGames(doc)
-	if len(games) != 3 {
-		t.Fatalf("expected 3 games, got %d", len(games))
-	}
-
-	want := []struct{ title, url, rating, cover string }{
-		{"Elden Ring", "https://backloggd.com/games/elden-ring/", "9", "https://images.igdb.com/cover/elden.jpg"},
-		{"Hollow Knight", "https://backloggd.com/games/hollow-knight/", "10", "https://images.igdb.com/cover/hk.jpg"},
-		{"Celeste", "https://backloggd.com/games/celeste/", "", "https://images.igdb.com/cover/celeste.jpg"},
-	}
-	for i, w := range want {
-		g := games[i]
-		if g.Title != w.title {
-			t.Errorf("[%d] Title = %q, want %q", i, g.Title, w.title)
-		}
-		if g.URL != w.url {
-			t.Errorf("[%d] URL = %q, want %q", i, g.URL, w.url)
-		}
-		if g.Rating != w.rating {
-			t.Errorf("[%d] Rating = %q, want %q", i, g.Rating, w.rating)
-		}
-		if g.CoverURL != w.cover {
-			t.Errorf("[%d] CoverURL = %q, want %q", i, g.CoverURL, w.cover)
-		}
+func TestGetGamesLoads(t *testing.T) {
+	list := getGames()
+	// games.json must have at least one section defined (even if empty slices).
+	if list.Playing == nil && list.Completed == nil {
+		t.Error("getGames() returned empty struct — check games.json")
 	}
 }
 
-func TestExtractGamesDeduplication(t *testing.T) {
-	dup := `<html><body>
-	  <div class="game-cover"><a href="/games/a/" class="cover-link"></a><div class="game-text-centered">Game A</div></div>
-	  <div class="game-cover"><a href="/games/a/" class="cover-link"></a><div class="game-text-centered">Game A</div></div>
-	</body></html>`
-
-	doc, _ := html.Parse(strings.NewReader(dup))
-	games := extractGames(doc)
-	if len(games) != 1 {
-		t.Errorf("expected 1 unique game after dedup, got %d", len(games))
-	}
-}
-
-// ---- SVG builder tests ----
+// ---- SVG builder ----
 
 func TestBuildSVGContents(t *testing.T) {
-	games := map[string][]Game{
-		"playing":   {{Title: "Elden Ring", URL: "https://backloggd.com/games/elden-ring/", Rating: "9"}},
-		"completed": {},
+	list := GameList{
+		Playing:   []Game{{Title: "Elden Ring", Rating: "9", URL: "https://backloggd.com/games/elden-ring/"}},
+		Completed: []Game{},
 	}
-	svg := buildSVG(games)
+	svg := buildSVG(list)
 
 	for _, needle := range []string{
 		`<svg`, `xmlns="http://www.w3.org/2000/svg"`,
-		backloggdUser, "Elden Ring", "9/10",
-		"Playing (1)", "Completed (0)", "Nothing here yet", `</svg>`,
+		"Elden Ring", "9/10",
+		"Playing (1)", "Completed (0)", "Nothing here yet",
+		`</svg>`,
 	} {
 		if !strings.Contains(svg, needle) {
 			t.Errorf("SVG missing %q", needle)
@@ -131,11 +74,10 @@ func TestBuildSVGContents(t *testing.T) {
 }
 
 func TestBuildSVGEscapesTitles(t *testing.T) {
-	games := map[string][]Game{
-		"playing":   {{Title: `Banjo & Kazooie`}},
-		"completed": {},
+	list := GameList{
+		Playing: []Game{{Title: `Banjo & Kazooie`}},
 	}
-	svg := buildSVG(games)
+	svg := buildSVG(list)
 	if strings.Contains(svg, "Banjo & Kazooie") {
 		t.Error("SVG contains unescaped ampersand")
 	}
@@ -144,7 +86,17 @@ func TestBuildSVGEscapesTitles(t *testing.T) {
 	}
 }
 
-// ---- rate limiter tests ----
+func TestBuildSVGNoRatingSkipped(t *testing.T) {
+	list := GameList{
+		Playing: []Game{{Title: "Some Game"}},
+	}
+	svg := buildSVG(list)
+	if strings.Contains(svg, "/10") {
+		t.Error("SVG should not show rating when none set")
+	}
+}
+
+// ---- rate limiter ----
 
 func newLimiter() *ipLimiter {
 	return &ipLimiter{hits: make(map[string][]time.Time), lastGC: time.Now()}
@@ -190,7 +142,7 @@ func TestRateLimiterResetsAfterWindow(t *testing.T) {
 	}
 }
 
-// ---- clientIP tests ----
+// ---- clientIP ----
 
 func TestClientIP(t *testing.T) {
 	cases := []struct {
