@@ -2,4 +2,4 @@ module encore.app
 
 go 1.26
 
-require encore.dev v1.27.0
+require golang.org/x/net v0.55.0
